@@ -161,3 +161,7 @@ check the hooks and the tests.
   repeats in the file can point at an earlier copy.
 - The symbol scan is a heuristic, not a parser: a name of six or more
   characters that one file declares and the other mentions makes an edge.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
