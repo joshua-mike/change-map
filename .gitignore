@@ -1,0 +1,5 @@
+# Project-specific layers stay on the machine that wrote them.
+layers.local.json
+
+# Claude Code generates these type declarations when it loads the mod.
+.claude-plugin/types/

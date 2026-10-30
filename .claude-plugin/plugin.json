@@ -1,0 +1,6 @@
+{
+  "name": "change-map",
+  "version": "0.2.0",
+  "description": "A pane that lists each code file the session changed, once, as a git-style graph of the request flow between them, with the lines each change touched",
+  "types": "./types/index.d.ts"
+}
