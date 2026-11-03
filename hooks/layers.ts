@@ -49,7 +49,8 @@ export const BUILT_IN_LAYERS: readonly Layer[] = [
   { name: 'Shared', rank: 9, pattern: /(^|\/)(shared|common|libs?|utils?|helpers|core|infrastructure)\//, color: DEFAULT_COLOR },
 ]
 
-const OTHER: Layer = { name: 'Other', rank: 10, pattern: /$^/, color: DEFAULT_COLOR }
+/** The layer of a file no pattern matches: its place in the rows comes from its edges, or it goes last. */
+export const OTHER_LAYER: Layer = { name: 'Other', rank: 10, pattern: /$^/, color: DEFAULT_COLOR }
 
 /** A layer as `layers.local.json` writes it: `pattern` is a regular expression source. */
 export type LayerConfig = {
@@ -95,5 +96,5 @@ function toLayer(config: unknown): Layer | string {
 
 export function layerOf(relPath: string): Layer {
   const path = relPath.toLowerCase()
-  return layers.find(layer => layer.pattern.test(path)) ?? OTHER
+  return layers.find(layer => layer.pattern.test(path)) ?? OTHER_LAYER
 }
