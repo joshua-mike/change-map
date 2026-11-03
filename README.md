@@ -20,10 +20,11 @@ The pane opens on the first code file change. `/change-map` opens it again.
 
 ## What a row shows
 
-- **The dot and the lanes.** The dot's color marks the file's layer. The rows
-  sort by layer, from the caller layers down to the database, so a request
-  flows down the pane. An edge joins two files when one names a type or
-  method that the other declares.
+- **The dot and the lanes.** The dot's color marks the file's layer. An edge
+  joins two files when one names a type or method that the other declares,
+  and the file it names sorts below it. So a request flows down the pane in
+  any codebase, whatever its folders are called. The layers order the rest;
+  see [Row order](#row-order).
 - **The number.** The order in which the session first changed the file.
 - **The file name.** A click copies the name to the clipboard. `×N` is how many
   times the file was found changed.
@@ -55,10 +56,26 @@ The line ranges come from `git diff -U0` against the commit that was HEAD when
 the session started, one range per hunk. Outside git, each `Edit` contributes
 the lines its new text occupies.
 
+## Row order
+
+Each file gets a level, and the rows sort by level, then by layer rank, then
+by the order of the first change.
+
+- A file's layer rank is its lowest level: the highest it can sit in the pane.
+- A file sits at least one level below every file that names it. When
+  `main.go` names a function in `invoice.go`, which names one in `amount.go`,
+  the three draw in that order, though no layer matches their folders.
+- Files that name each other, directly or around a loop, share a level.
+- A file in Other with no edge goes last.
+
+So the layers decide what the code leaves open, such as two files with no
+edge between them. When the code and the layers disagree, the code wins: a
+`utils/` file that names a type in `models/` sorts above it.
+
 ## Layers
 
 The built-in layers match common folder names. The first match wins, and the
-rank gives the row order.
+rank places the file in the [row order](#row-order).
 
 | Rank | Layer       | Matches                                                      |
 | ---- | ----------- | ------------------------------------------------------------ |
@@ -88,7 +105,8 @@ ignored by git, so it stays on your machine.
 - `pattern` is a regular expression source, matched case-insensitively against
   the path relative to the session folder, with forward slashes. `(^|/)`
   anchors a folder name anywhere in the path.
-- `rank` orders the rows; it can repeat a built-in rank or sit between two.
+- `rank` places the layer in the row order; it can repeat a built-in rank or
+  sit between two.
 - `color` is a Claude Code theme key, so the dot follows the light or dark
   theme. It is optional.
 
@@ -146,7 +164,7 @@ check the hooks and the tests.
 | `hooks/layers.ts`           | Code file extensions, the built-in layers, the local layers |
 | `hooks/symbols.ts`          | The symbol scan that decides the edges                      |
 | `hooks/dag.ts`              | The lane drawing                                            |
-| `hooks/map.ts`              | Rows: sort, edges, lanes                                    |
+| `hooks/map.ts`              | Rows: edges, levels, sort, lanes                            |
 | `types/index.d.ts`          | The stored state: one record per changed file               |
 | `tests/change-map.test.tsx` | The tests, with a fake git                                  |
 
@@ -161,6 +179,8 @@ check the hooks and the tests.
   repeats in the file can point at an earlier copy.
 - The symbol scan is a heuristic, not a parser: a name of six or more
   characters that one file declares and the other mentions makes an edge.
+  Since the edges set the row order, a false edge moves a file down, and a
+  missed one leaves the file at its layer's place.
 
 ## License
 

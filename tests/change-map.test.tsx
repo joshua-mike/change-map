@@ -3,6 +3,9 @@ import { expect, test } from 'claude-code/testing'
 import { drawLanes } from '../hooks/dag'
 import { layerOf, useLocalLayers } from '../hooks/layers'
 import { editRange, formatRanges, mergeRanges, parseDiffRanges } from '../hooks/lineRanges'
+import { buildRows } from '../hooks/map'
+import { scanSymbols } from '../hooks/symbols'
+import type { ChangedFile } from '../types'
 
 const ROOT = 'C:\\repo'
 const VIEW = `${ROOT}\\src\\Views\\OrderView.cs`
@@ -113,6 +116,20 @@ function nameStatus(...pairs: [string, string][]): string {
 
 async function hasText(ui: { find: (q: { type?: string; text?: string | RegExp }) => Promise<unknown> }, text: string | RegExp) {
   return (await ui.find({ type: 'Text', text })) !== undefined
+}
+
+/** The map rows of files changed in the order given, each with its content. */
+function rowsOf(...files: [relPath: string, content: string][]) {
+  const changed: ChangedFile[] = files.map(([relPath], index) => ({
+    key: `file:c:/repo/${relPath.toLowerCase()}`,
+    absPath: `C:/repo/${relPath}`,
+    relPath,
+    order: index + 1,
+    edits: 1,
+    isNew: false,
+    ranges: [],
+  }))
+  return buildRows(changed, files.map(([, content]) => scanSymbols(content)))
 }
 
 test('Edit and Write calls map each code file once, by name, with the lines each edit changed', async ($, on) => {
@@ -310,6 +327,34 @@ test('a pane with no changes says so', async ($, on) => {
 
 test('two callers of one callee merge into its lane', async () => {
   expect(drawLanes([{ children: [2] }, { children: [2] }, { children: [] }])).toEqual(['●  ', '│ ●', '●─┘'])
+})
+
+test('with no layer to go by, a caller sorts above the files it names, and a file with no edge goes last', async () => {
+  // A Go layout that no built-in layer matches, changed from the callee up.
+  const rows = rowsOf(
+    ['internal/money/amount.go', 'package money\n\nfunc FormatAmount(cents int) string { return "" }'],
+    ['cmd/shop/flags.go', 'package main\n\nfunc parseFlags() { }'],
+    ['internal/billing/invoice.go', 'package billing\n\nfunc ChargeInvoice(id string) { money.FormatAmount(5) }'],
+    ['cmd/shop/main.go', 'package main\n\nfunc main() { billing.ChargeInvoice("a") }'],
+  )
+  expect(rows.map(row => row.file.relPath)).toEqual(['cmd/shop/main.go', 'internal/billing/invoice.go', 'internal/money/amount.go', 'cmd/shop/flags.go'])
+  expect(rows.map(row => row.layer.name)).toEqual(['Other', 'Other', 'Other', 'Other'])
+  // One lane runs from main down to amount; flags joins nothing.
+  expect(rows.map(row => row.laneBelow)).toEqual(['│', '│', ' ', ' '])
+})
+
+test('a file sorts below the file that names it, whatever its layer, and files that name each other share a level', async () => {
+  const rows = rowsOf(
+    ['src/models/invoice.ts', 'export interface Invoice { total: number }'],
+    ['src/utils/format.ts', 'export function formatInvoice(invoice: Invoice) { return invoice.total }'],
+    ['src/services/billing.ts', 'export function chargeCustomer() { recordPayment() }'],
+    ['src/services/ledger.ts', 'export function recordPayment() { chargeCustomer() }'],
+  )
+  // The layer table alone would put the Model above the Shared file that names it.
+  expect(rows.map(row => row.file.relPath)).toEqual(['src/services/billing.ts', 'src/services/ledger.ts', 'src/utils/format.ts', 'src/models/invoice.ts'])
+  expect(rows.map(row => row.layer.name)).toEqual(['Service', 'Service', 'Shared', 'Model'])
+  // The loop draws as one edge, and format joins invoice.
+  expect(rows.map(row => row.laneBelow)).toEqual(['│', ' ', '│', ' '])
 })
 
 test('built-in layers rank a request path from the test down to the database', async () => {

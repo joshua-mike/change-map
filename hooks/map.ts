@@ -3,7 +3,7 @@
 
 import type { ChangedFile } from '../types'
 import { drawLanes } from './dag'
-import { layerOf, type Layer } from './layers'
+import { layerOf, OTHER_LAYER, type Layer } from './layers'
 import { EMPTY_SCAN, references, type SymbolScan } from './symbols'
 
 const ELLIPSIS = '…'
@@ -48,20 +48,70 @@ export function fitStart(text: string, room: number): string {
   return text.slice(0, room - ELLIPSIS.length) + ELLIPSIS
 }
 
+// After every file that has a level, in change order.
+const LAST_LEVEL = Number.MAX_SAFE_INTEGER
+
+function has(matrix: readonly (readonly boolean[])[], a: number, b: number): boolean {
+  return matrix[a]?.[b] === true
+}
+
 /**
- * Files sort by layer rank (caller layers first), then by change order, so the
- * same list always draws the same graph. An edge always points down that
- * order: when a lower layer names an upper one, the edge still joins them,
- * because the map shows relation, not exact call direction.
+ * The level of each file, top of the pane first. A file's layer rank is its
+ * lowest level, and a file sits at least one level below every file that names
+ * it, so a caller draws above what it calls whatever its folder is called.
+ * Files that name each other, directly or around a loop, share a level. A file
+ * in no layer and with no edge has nothing to go by, so it goes last.
+ */
+function levelsOf(layers: readonly Layer[], calls: readonly (readonly boolean[])[]): number[] {
+  const count = calls.length
+
+  // reach[a][b]: a names b, directly or through other changed files.
+  const reach = calls.map(row => [...row])
+  for (let via = 0; via < count; via++) {
+    for (const row of reach) {
+      if (row[via] !== true) continue
+      for (let b = 0; b < count; b++) if (has(reach, via, b)) row[b] = true
+    }
+  }
+  const isLoop = (a: number, b: number) => has(reach, a, b) && has(reach, b, a)
+
+  const levels = layers.map(layer => (layer === OTHER_LAYER ? 0 : layer.rank))
+  // Levels only move down, and the edges between loops form no loop, so this ends.
+  for (let isMoved = true; isMoved; ) {
+    isMoved = false
+    for (let a = 0; a < count; a++) {
+      for (let b = 0; b < count; b++) {
+        const level = levels[a] ?? 0
+        const wanted = isLoop(a, b) ? level : has(calls, a, b) ? level + 1 : -1
+        if (wanted > (levels[b] ?? 0)) {
+          levels[b] = wanted
+          isMoved = true
+        }
+      }
+    }
+  }
+
+  const isLinked = (a: number) => calls.some((_, b) => has(calls, a, b) || has(calls, b, a))
+  return levels.map((level, a) => (layers[a] === OTHER_LAYER && !isLinked(a) ? LAST_LEVEL : level))
+}
+
+/**
+ * Files sort by level, then by layer rank, then by change order, so the same
+ * list always draws the same graph. Every edge points down that order: across
+ * levels from a caller to what it names, and inside a level between files that
+ * name each other.
  */
 export function buildRows(files: readonly ChangedFile[], scans: readonly SymbolScan[]): MapRow[] {
-  const entries = files
-    .map((file, index) => ({ file, scan: scans[index] ?? EMPTY_SCAN, layer: layerOf(file.relPath) }))
-    .sort((a, b) => a.layer.rank - b.layer.rank || a.file.order - b.file.order)
+  const found = files.map((file, index) => ({ file, scan: scans[index] ?? EMPTY_SCAN, layer: layerOf(file.relPath) }))
+  const calls = found.map((caller, a) => found.map((callee, b) => a !== b && references(caller.scan, callee.scan)))
+  const levels = levelsOf(found.map(entry => entry.layer), calls)
+  const entries = found
+    .map((entry, index) => ({ ...entry, index, level: levels[index] ?? 0 }))
+    .sort((a, b) => a.level - b.level || a.layer.rank - b.layer.rank || a.file.order - b.file.order)
 
   const nodes = entries.map((upper, i) => ({
     children: entries.flatMap((lower, j) =>
-      j > i && (references(upper.scan, lower.scan) || references(lower.scan, upper.scan)) ? [j] : [],
+      j > i && (has(calls, upper.index, lower.index) || has(calls, lower.index, upper.index)) ? [j] : [],
     ),
   }))
 
