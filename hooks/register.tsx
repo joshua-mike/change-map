@@ -28,6 +28,8 @@ const files = atom({ plugin: 'change-map', key: 'files' } as const, [], { shape:
 // A reload empties it and the next draw reads the files again.
 const scanCache = new Map<string, SymbolScan>()
 
+// The session's project root. `session.start` gives the first value, and
+// syncWorkingDirectory reads it again on each event that can list a file.
 let workingDirectory: string | undefined
 
 // The repositories and worktrees polled for changes, by lowercase root. A
@@ -100,6 +102,21 @@ async function discoverRepositories($: EngineInterface, dir?: string): Promise<v
       await addRepository($, root)
     }
   }
+}
+
+/**
+ * Reads the session's project root again and, when it moved, polls the
+ * repositories of the new root from a fresh baseline. The desktop app starts
+ * some sessions in a spare folder and moves them to the project later, after
+ * `session.start` ran, so the first value can be stale. The root, not the
+ * cwd: a shell `cd` into a subfolder does not move it.
+ */
+async function syncWorkingDirectory($: EngineInterface): Promise<void> {
+  const root = await $.session.root()
+  if (workingDirectory !== undefined && pathKey(root) === pathKey(workingDirectory)) return
+  workingDirectory = root
+  baselines.clear()
+  await discoverRepositories($, root).catch(() => undefined)
 }
 
 /**
@@ -273,6 +290,7 @@ export const register: Register = on => {
 
     const ran = await next(e)
     if (!WRITING_TOOLS.has(e.tool) || ran.deny !== undefined) return ran
+    await syncWorkingDirectory($)
 
     // The tool's own path lists the file at once, also outside a git repository.
     if (path !== undefined && ran.isError !== true) {
@@ -290,6 +308,7 @@ export const register: Register = on => {
   // A background command or an MCP tool can write after its call returned.
   on('turn.complete', async ($, e, next) => {
     const answer = await next(e)
+    await syncWorkingDirectory($)
     await requestPoll($)
     return answer
   }).catch(($, e, next) => next(e))

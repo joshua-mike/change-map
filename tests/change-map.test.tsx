@@ -145,6 +145,7 @@ test('Edit and Write calls map each code file once, by name, with the lines each
     return { value: { isCopied: true } as const }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: ROOT }))
   on('tool.call', () => ({ result: {} }))
   on('process.run', (_, e) => answerGit(undefined, e.argv, e.init?.cwd, e.init?.stdin))
   on('fs.read', (_, e) => ({ value: CONTENT[e.path.replace(/\\/g, '/')] ?? '' }))
@@ -212,6 +213,7 @@ test('git finds files that a shell command, a subagent and a commit changed, wit
     return { value: { isPlaced: true } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: ROOT }))
   on('tool.call', () => ({ result: {} }))
   on('process.run', (_, e) => answerGit(git, e.argv, e.init?.cwd, e.init?.stdin))
   on('clock.now', () => ({ value: 1_793_000_000_000 }))
@@ -259,6 +261,7 @@ test('a worktree nested inside the working directory is polled, also when it app
   on('command.register', () => ({ value: { command: 'change-map' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: ROOT }))
   on('tool.call', () => ({ result: {} }))
   on('process.run', (_, e) => answerGit(git, e.argv, e.init?.cwd, e.init?.stdin))
   on('clock.now', () => ({ value: 1_793_000_000_000 }))
@@ -297,6 +300,44 @@ test('a worktree nested inside the working directory is polled, also when it app
   await ui.unmount()
 })
 
+test('a session that starts in a spare folder maps the project files once it moves to the project', async ($, on) => {
+  // The desktop app warms a process in a spare folder, runs session.start there, and moves it to the project later.
+  const SPARE = 'C:\\Users\\dev\\.claude\\spares\\spare-1'
+  let projectRoot = SPARE
+  const repo = fakeRepo()
+  const git: FakeGit = { repos: { 'C:/repo': repo }, worktrees: ['C:/repo'] }
+  let opens = 0
+  on('command.register', () => ({ value: { command: 'change-map' } }))
+  on('ui.open', () => {
+    opens += 1
+    return { value: { isPlaced: true } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: projectRoot }))
+  on('tool.call', () => ({ result: {} }))
+  on('process.run', (_, e) => answerGit(git, e.argv, e.init?.cwd, e.init?.stdin))
+  on('clock.now', () => ({ value: 1_793_000_000_000 }))
+  on('fs.read', (_, e) => ({ value: CONTENT[e.path.replace(/\\/g, '/')] ?? '' }))
+  on('fs.exists', () => ({ value: true }))
+
+  await $.session.start({ cwd: SPARE, surface: 'desktop', isInteractive: true })
+  projectRoot = ROOT
+
+  // The first edit after the move lists its file and opens the pane.
+  await $.tool.call(edit(VIEW, '    OrderCalculator.Compute();'))
+  expect(opens).toBe(1)
+
+  // A shell edit after the move is found through the project's repository.
+  repo.status = ` M ${SERVER_REL}\0`
+  repo.diff = hunk(SERVER_REL, '@@ -2 +2 @@', '-  public Stream DeleteOrder() { }', '+  public Stream DeleteOrder(RequestArgs args) { }')
+  await $.tool.call({ tool: 'Bash', command: 'py apply_fix.py' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.findAll({ type: 'Button' })).map(button => button.key)).toEqual([VIEW_KEY, SERVER_KEY])
+  expect(await hasText(ui, 'L2')).toBe(true)
+  await ui.unmount()
+})
+
 test('layers.local.json puts a project layer before the built-in ones', async ($, on) => {
   const LOCAL_LAYERS = JSON.stringify([{ name: 'Widget', rank: 0, pattern: '(^|/)widgets/', color: 'warning' }])
   const WIDGET = `${ROOT}\\src\\Views\\widgets\\Dial.cs`
@@ -304,6 +345,7 @@ test('layers.local.json puts a project layer before the built-in ones', async ($
   on('command.register', () => ({ value: { command: 'change-map' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: ROOT }))
   on('tool.call', () => ({ result: {} }))
   on('process.run', (_, e) => answerGit(undefined, e.argv, e.init?.cwd, e.init?.stdin))
   on('fs.exists', (_, e) => ({ value: e.path.endsWith('layers.local.json') || e.path.replace(/\\/g, '/') in CONTENT }))
