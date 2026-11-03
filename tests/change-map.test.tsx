@@ -357,6 +357,21 @@ test('a file sorts below the file that names it, whatever its layer, and files t
   expect(rows.map(row => row.laneBelow)).toEqual(['│', ' ', '│', ' '])
 })
 
+test('a file in Other that names files sits just above the highest of them, not at the top', async () => {
+  const rows = rowsOf(
+    ['src/Views/OrderView.cs', 'public class OrderView { }'],
+    ['db/orders.sql', 'create table ORDERS_TABLE (id number);'],
+    // A chain of two Other files: the seed tool names the loader, which names the table.
+    ['tools/SeedTool.cs', 'class SeedTool { void Run() { OrdersLoader.Load(); } }'],
+    ['tools/OrdersLoader.cs', 'class OrdersLoader { void Load() { Exec("insert into ORDERS_TABLE"); } }'],
+  )
+  // The View has no edge to the tools, so it keeps its place at the top.
+  expect(rows.map(row => row.file.relPath)).toEqual(['src/Views/OrderView.cs', 'tools/SeedTool.cs', 'tools/OrdersLoader.cs', 'db/orders.sql'])
+  expect(rows.map(row => row.layer.name)).toEqual(['View', 'Other', 'Other', 'Database'])
+  // One lane runs from the seed tool down to the table.
+  expect(rows.map(row => row.laneBelow)).toEqual([' ', '│', '│', ' '])
+})
+
 test('built-in layers rank a request path from the test down to the database', async () => {
   const names = ['tests/OrderTests.cs', 'src/Views/OrderView.cs', 'src/Services/OrderCalculator.cs', 'src/Server/Handlers/OrderDeletion.cs', 'db/orders.sql', 'README.cs']
   expect(names.map(path => layerOf(path).name)).toEqual(['Test', 'View', 'Service', 'Server', 'Database', 'Other'])

@@ -60,6 +60,7 @@ function has(matrix: readonly (readonly boolean[])[], a: number, b: number): boo
  * lowest level, and a file sits at least one level below every file that names
  * it, so a caller draws above what it calls whatever its folder is called.
  * Files that name each other, directly or around a loop, share a level. A file
+ * in Other that names files sits one level above the highest of them. A file
  * in no layer and with no edge has nothing to go by, so it goes last.
  */
 function levelsOf(layers: readonly Layer[], calls: readonly (readonly boolean[])[]): number[] {
@@ -87,6 +88,25 @@ function levelsOf(layers: readonly Layer[], calls: readonly (readonly boolean[])
           levels[b] = wanted
           isMoved = true
         }
+      }
+    }
+  }
+
+  // A file in Other has no rank to hold it, so after the pass above a caller in
+  // Other still sits at level 0, above files it has no edge to. Move it down to
+  // one level above the highest file it names. Files in a loop keep the loop's
+  // level. A move stops above every callee, so no edge turns upward; levels only
+  // move down, so this ends, and the result does not depend on the file order.
+  const calleesOf = (a: number) => calls[a]?.flatMap((isCall, b) => (isCall ? [b] : [])) ?? []
+  for (let isMoved = true; isMoved; ) {
+    isMoved = false
+    for (let a = 0; a < count; a++) {
+      const callees = calleesOf(a)
+      if (layers[a] !== OTHER_LAYER || has(reach, a, a) || callees.length === 0) continue
+      const wanted = Math.min(...callees.map(b => levels[b] ?? 0)) - 1
+      if (wanted > (levels[a] ?? 0)) {
+        levels[a] = wanted
+        isMoved = true
       }
     }
   }

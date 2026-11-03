@@ -66,6 +66,9 @@ by the order of the first change.
   `main.go` names a function in `invoice.go`, which names one in `amount.go`,
   the three draw in that order, though no layer matches their folders.
 - Files that name each other, directly or around a loop, share a level.
+- A file in Other that names files sits one level above the highest of them.
+  A `tools/` script that names a table in `db/` draws just above the table,
+  not at the top of the pane above files it has no edge to.
 - A file in Other with no edge goes last.
 
 So the layers decide what the code leaves open, such as two files with no
