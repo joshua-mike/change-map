@@ -201,6 +201,31 @@ async function recordChanges($: EngineInterface, changes: readonly PolledChange[
   if (isFirstFile) void $.ui.open({ id: PANE, title: TITLE })
 }
 
+/**
+ * Removes each file the session created that is gone from disk, then numbers
+ * the remaining rows again in their first-change order. A created file that a
+ * later command deletes is no change, such as a folder that a command moves
+ * aside and removes. A deleted tracked file stays: git still reports it.
+ */
+async function pruneVanishedFiles($: EngineInterface): Promise<void> {
+  const vanished = new Set<string>()
+  for (const file of await read($, files)) {
+    // A failed check keeps the file: a missed removal is safer than a lost row.
+    if (file.isNew && !(await $.fs.exists(file.absPath).catch(() => true))) vanished.add(file.key)
+  }
+  if (vanished.size === 0) return
+
+  await update($, files, list =>
+    list
+      .filter(file => !vanished.has(file.key))
+      .sort((a, b) => a.order - b.order)
+      .map((file, index) => ({ ...file, order: index + 1 })),
+  )
+  for (const cacheKey of scanCache.keys()) {
+    if (vanished.has(cacheKey.slice(0, cacheKey.lastIndexOf('#')))) scanCache.delete(cacheKey)
+  }
+}
+
 function requestPoll($: EngineInterface): Promise<void> {
   if (runningPoll !== undefined) {
     isPollRequested = true
@@ -213,6 +238,7 @@ function requestPoll($: EngineInterface): Promise<void> {
       // A poll cannot tell a new edit from an old dirty state, so each file it
       // finds is marked edited and its symbols are read again at the next draw.
       for (const baseline of [...baselines.values()]) await recordChanges($, await pollChanges($, baseline))
+      await pruneVanishedFiles($)
     } while (isPollRequested)
   })().finally(() => {
     runningPoll = undefined
