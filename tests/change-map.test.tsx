@@ -62,8 +62,8 @@ const PANE = {
   },
 } as const
 
-/** A fake repository or worktree: the test sets what git answers from its root. */
-type FakeRepo = { status: string; head: string; log: string; diff: string; hashes: Record<string, string> }
+/** A fake repository or worktree: the test sets what git answers from its root. `tree` lists the files at the start commit. */
+type FakeRepo = { status: string; head: string; log: string; diff: string; hashes: Record<string, string>; tree: string[] }
 
 /** Fake repositories by root; `worktrees` is what `git worktree list` prints from any of them. */
 type FakeGit = { repos: Record<string, FakeRepo>; worktrees: string[] }
@@ -73,7 +73,7 @@ function run(stdout: string, exitCode = 0) {
 }
 
 function fakeRepo(repo: Partial<FakeRepo> = {}): FakeRepo {
-  return { status: '', head: 'aaa', log: '', diff: '', hashes: {}, ...repo }
+  return { status: '', head: 'aaa', log: '', diff: '', hashes: {}, tree: [], ...repo }
 }
 
 function answerGit(git: FakeGit | undefined, argv: readonly string[], cwd: string | undefined, stdin: string | undefined) {
@@ -89,6 +89,10 @@ function answerGit(git: FakeGit | undefined, argv: readonly string[], cwd: strin
   if (args.startsWith('status')) return run(repo.status)
   if (args.startsWith('merge-base --is-ancestor')) return run('')
   if (args.startsWith('log')) return run(repo.log)
+  if (args.includes(' ls-tree ')) {
+    const asked = argv.slice(argv.indexOf('--') + 1)
+    return run(repo.tree.filter(path => asked.includes(path)).map(path => `${path}\0`).join(''))
+  }
   if (args.includes(' diff -U0 ')) return run(repo.diff)
   if (args === 'hash-object --stdin-paths') {
     const paths = (stdin ?? '').split('\n').filter(Boolean)
@@ -310,7 +314,7 @@ test('a file the session created and then deleted leaves the map; a deleted trac
   const ASIDE = 'packages.partial-restore'
   const SCRIPT_REL = `${ASIDE}/Modernizr.2.8.3/Content/Scripts/modernizr-2.8.3.js`
   const INSTALL_REL = `${ASIDE}/AWSSDK.Core.3.3.24.2/tools/install.ps1`
-  const repo = fakeRepo()
+  const repo = fakeRepo({ tree: [VIEW_REL, SERVER_REL] })
   const git: FakeGit = { repos: { 'C:/repo': repo }, worktrees: ['C:/repo'] }
   const onDisk = new Set<string>([`C:/repo/${VIEW_REL}`, `C:/repo/${SERVER_REL}`])
   on('command.register', () => ({ value: { command: 'change-map' } }))
@@ -352,6 +356,39 @@ test('a file the session created and then deleted leaves the map; a deleted trac
   expect(await hasText(ui, /● +1 $/)).toBe(true)
   expect(await hasText(ui, /● +2 $/)).toBe(true)
   expect(await hasText(ui, /● +3 $/)).toBe(false)
+  await ui.unmount()
+})
+
+test('a file the session created, staged and then deleted leaves the map and does not come back', async ($, on) => {
+  const repo = fakeRepo({ tree: [VIEW_REL] })
+  const git: FakeGit = { repos: { 'C:/repo': repo }, worktrees: ['C:/repo'] }
+  const onDisk = new Set<string>([`C:/repo/${VIEW_REL}`])
+  on('command.register', () => ({ value: { command: 'change-map' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: ROOT }))
+  on('tool.call', (_, e) => {
+    if (e.tool === 'Write') onDisk.add(e.file_path.replace(/\\/g, '/'))
+    return { result: {} }
+  })
+  on('process.run', (_, e) => answerGit(git, e.argv, e.init?.cwd, e.init?.stdin))
+  on('clock.now', () => ({ value: 1_793_000_000_000 }))
+  on('fs.read', (_, e) => ({ value: CONTENT[e.path.replace(/\\/g, '/')] ?? '' }))
+  on('fs.exists', (_, e) => ({ value: onDisk.has(e.path.replace(/\\/g, '/')) }))
+
+  await $.session.start({ cwd: ROOT, surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Write', file_path: NEW_TEST, content: CONTENT[`C:/repo/${NEW_TEST_REL}`] ?? '' })
+  repo.status = `A  ${NEW_TEST_REL}\0`
+  await $.tool.call({ tool: 'Bash', command: `git add ${NEW_TEST_REL}` })
+
+  // Git still reports the staged file after it is gone, through two polls.
+  repo.status = `AD ${NEW_TEST_REL}\0`
+  onDisk.delete(`C:/repo/${NEW_TEST_REL}`)
+  await $.tool.call({ tool: 'Bash', command: `rm ${NEW_TEST_REL}` })
+  await $.tool.call({ tool: 'Bash', command: 'git status' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await hasText(ui, 'No code files changed yet.')).toBe(true)
   await ui.unmount()
 })
 

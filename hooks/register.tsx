@@ -205,19 +205,23 @@ async function recordChanges($: EngineInterface, changes: readonly PolledChange[
  * Removes each file the session created that is gone from disk, then numbers
  * the remaining rows again in their first-change order. A created file that a
  * later command deletes is no change, such as a folder that a command moves
- * aside and removes. A deleted tracked file stays: git still reports it.
+ * aside and removes. A deleted file that existed before the session stays.
  */
 async function pruneVanishedFiles($: EngineInterface): Promise<void> {
-  const vanished = new Set<string>()
-  for (const file of await read($, files)) {
-    // A failed check keeps the file: a missed removal is safer than a lost row.
-    if (file.isNew && !(await $.fs.exists(file.absPath).catch(() => true))) vanished.add(file.key)
-  }
+  const created = (await read($, files)).filter(file => file.isNew)
+  // A failed check keeps the file: a missed removal is safer than a lost row.
+  const isGone = await Promise.all(created.map(file => $.fs.exists(file.absPath).then(exists => !exists, () => false)))
+  // The edit count at the check. A tool call outside the poll can recreate the
+  // file before the update runs; its new edit count keeps the row.
+  const vanished = new Map<string, number>()
+  created.forEach((file, index) => {
+    if (isGone[index]) vanished.set(file.key, file.edits)
+  })
   if (vanished.size === 0) return
 
   await update($, files, list =>
     list
-      .filter(file => !vanished.has(file.key))
+      .filter(file => vanished.get(file.key) !== file.edits)
       .sort((a, b) => a.order - b.order)
       .map((file, index) => ({ ...file, order: index + 1 })),
   )

@@ -175,6 +175,27 @@ async function readDiff($: EngineInterface, baseline: GitBaseline, paths: readon
 }
 
 /**
+ * Removes each deleted entry for a file that did not exist when the session
+ * started. Such a file is one the session created, staged or committed, and
+ * then deleted: git still reports it, but it is no change. A file that was
+ * dirty at the start is kept, and so is every entry when the check fails.
+ */
+async function dropDeletedSessionFiles($: EngineInterface, baseline: GitBaseline, entries: StatusEntry[]): Promise<StatusEntry[]> {
+  const candidates = entries.filter(entry => entry.isDeleted && !baseline.preexisting.has(entry.path))
+  if (candidates.length === 0) return entries
+
+  const atStart = new Set<string>()
+  if (baseline.startHead !== '') {
+    const tree = await git($, baseline.root, [
+      '-c', 'core.quotePath=false', 'ls-tree', '-r', '-z', '--name-only', baseline.startHead, '--', ...candidates.map(entry => entry.path),
+    ])
+    if (!tree.isOk) return entries
+    for (const path of tree.stdout.split('\0')) if (path !== '') atStart.add(path)
+  }
+  return entries.filter(entry => !candidates.includes(entry) || atStart.has(entry.path))
+}
+
+/**
  * Returns the files changed since the baseline, absolute with forward slashes,
  * and moves `baseline.head` to the current HEAD.
  *
@@ -184,7 +205,7 @@ async function readDiff($: EngineInterface, baseline: GitBaseline, paths: readon
 export async function pollChanges($: EngineInterface, baseline: GitBaseline): Promise<PolledChange[]> {
   const found = new Map<string, FoundChange>()
 
-  const entries = await readStatus($, baseline.root)
+  const entries = await dropDeletedSessionFiles($, baseline, await readStatus($, baseline.root))
   const hashes = await hashEntries(
     $,
     baseline.root,
