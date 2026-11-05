@@ -45,6 +45,11 @@ When the pane is narrow, the lines move under the file name.
   shell command, a subagent, or a commit is found too.
 - A file that was dirty before the session started counts only after its
   content changes.
+- A file the session created and then deleted leaves the map at the next
+  poll, and the rows are numbered again. So a folder that a command moves
+  aside and then removes leaves no rows. This is also true when the session
+  staged or committed the file first. A deleted file that existed before
+  the session stays.
 - Every git worktree nested inside the session folder is polled as well, also
   one created during the session. A session that works in such a worktree is
   mapped even though the main checkout's git never sees those files.

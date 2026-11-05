@@ -201,6 +201,35 @@ async function recordChanges($: EngineInterface, changes: readonly PolledChange[
   if (isFirstFile) void $.ui.open({ id: PANE, title: TITLE })
 }
 
+/**
+ * Removes each file the session created that is gone from disk, then numbers
+ * the remaining rows again in their first-change order. A created file that a
+ * later command deletes is no change, such as a folder that a command moves
+ * aside and removes. A deleted file that existed before the session stays.
+ */
+async function pruneVanishedFiles($: EngineInterface): Promise<void> {
+  const created = (await read($, files)).filter(file => file.isNew)
+  // A failed check keeps the file: a missed removal is safer than a lost row.
+  const isGone = await Promise.all(created.map(file => $.fs.exists(file.absPath).then(exists => !exists, () => false)))
+  // The edit count at the check. A tool call outside the poll can recreate the
+  // file before the update runs; its new edit count keeps the row.
+  const vanished = new Map<string, number>()
+  created.forEach((file, index) => {
+    if (isGone[index]) vanished.set(file.key, file.edits)
+  })
+  if (vanished.size === 0) return
+
+  await update($, files, list =>
+    list
+      .filter(file => vanished.get(file.key) !== file.edits)
+      .sort((a, b) => a.order - b.order)
+      .map((file, index) => ({ ...file, order: index + 1 })),
+  )
+  for (const cacheKey of scanCache.keys()) {
+    if (vanished.has(cacheKey.slice(0, cacheKey.lastIndexOf('#')))) scanCache.delete(cacheKey)
+  }
+}
+
 function requestPoll($: EngineInterface): Promise<void> {
   if (runningPoll !== undefined) {
     isPollRequested = true
@@ -213,6 +242,7 @@ function requestPoll($: EngineInterface): Promise<void> {
       // A poll cannot tell a new edit from an old dirty state, so each file it
       // finds is marked edited and its symbols are read again at the next draw.
       for (const baseline of [...baselines.values()]) await recordChanges($, await pollChanges($, baseline))
+      await pruneVanishedFiles($)
     } while (isPollRequested)
   })().finally(() => {
     runningPoll = undefined

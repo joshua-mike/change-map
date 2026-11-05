@@ -62,8 +62,8 @@ const PANE = {
   },
 } as const
 
-/** A fake repository or worktree: the test sets what git answers from its root. */
-type FakeRepo = { status: string; head: string; log: string; diff: string; hashes: Record<string, string> }
+/** A fake repository or worktree: the test sets what git answers from its root. `tree` lists the files at the start commit. */
+type FakeRepo = { status: string; head: string; log: string; diff: string; hashes: Record<string, string>; tree: string[] }
 
 /** Fake repositories by root; `worktrees` is what `git worktree list` prints from any of them. */
 type FakeGit = { repos: Record<string, FakeRepo>; worktrees: string[] }
@@ -73,7 +73,7 @@ function run(stdout: string, exitCode = 0) {
 }
 
 function fakeRepo(repo: Partial<FakeRepo> = {}): FakeRepo {
-  return { status: '', head: 'aaa', log: '', diff: '', hashes: {}, ...repo }
+  return { status: '', head: 'aaa', log: '', diff: '', hashes: {}, tree: [], ...repo }
 }
 
 function answerGit(git: FakeGit | undefined, argv: readonly string[], cwd: string | undefined, stdin: string | undefined) {
@@ -89,6 +89,10 @@ function answerGit(git: FakeGit | undefined, argv: readonly string[], cwd: strin
   if (args.startsWith('status')) return run(repo.status)
   if (args.startsWith('merge-base --is-ancestor')) return run('')
   if (args.startsWith('log')) return run(repo.log)
+  if (args.includes(' ls-tree ')) {
+    const asked = argv.slice(argv.indexOf('--') + 1)
+    return run(repo.tree.filter(path => asked.includes(path)).map(path => `${path}\0`).join(''))
+  }
   if (args.includes(' diff -U0 ')) return run(repo.diff)
   if (args === 'hash-object --stdin-paths') {
     const paths = (stdin ?? '').split('\n').filter(Boolean)
@@ -144,12 +148,17 @@ test('Edit and Write calls map each code file once, by name, with the lines each
     copied = e.text
     return { value: { isCopied: true } as const }
   })
+  // The test file exists only after its Write runs, so the Write makes a new file.
+  let isTestWritten = false
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: ROOT }))
-  on('tool.call', () => ({ result: {} }))
+  on('tool.call', (_, e) => {
+    if (e.tool === 'Write' && e.file_path === NEW_TEST) isTestWritten = true
+    return { result: {} }
+  })
   on('process.run', (_, e) => answerGit(undefined, e.argv, e.init?.cwd, e.init?.stdin))
   on('fs.read', (_, e) => ({ value: CONTENT[e.path.replace(/\\/g, '/')] ?? '' }))
-  on('fs.exists', (_, e) => ({ value: e.path.replace(/\\/g, '/') in CONTENT && !e.path.endsWith('OrderTests.cs') }))
+  on('fs.exists', (_, e) => ({ value: e.path.replace(/\\/g, '/') in CONTENT && (isTestWritten || !e.path.endsWith('OrderTests.cs')) }))
 
   await $.session.start({ cwd: ROOT, surface: 'desktop', isInteractive: true })
   await $.tool.call(edit(README))
@@ -297,6 +306,89 @@ test('a worktree nested inside the working directory is polled, also when it app
   expect(await hasText(ui, 'OrderView.cs')).toBe(true)
   expect(await hasText(ui, 'L3')).toBe(true)
   expect(await hasText(ui, 'L2')).toBe(true)
+  await ui.unmount()
+})
+
+test('a file the session created and then deleted leaves the map; a deleted tracked file stays', async ($, on) => {
+  // A command moves a partial NuGet folder aside under a name .gitignore does not cover, then removes it.
+  const ASIDE = 'packages.partial-restore'
+  const SCRIPT_REL = `${ASIDE}/Modernizr.2.8.3/Content/Scripts/modernizr-2.8.3.js`
+  const INSTALL_REL = `${ASIDE}/AWSSDK.Core.3.3.24.2/tools/install.ps1`
+  const repo = fakeRepo({ tree: [VIEW_REL, SERVER_REL] })
+  const git: FakeGit = { repos: { 'C:/repo': repo }, worktrees: ['C:/repo'] }
+  const onDisk = new Set<string>([`C:/repo/${VIEW_REL}`, `C:/repo/${SERVER_REL}`])
+  on('command.register', () => ({ value: { command: 'change-map' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: ROOT }))
+  on('tool.call', () => ({ result: {} }))
+  on('process.run', (_, e) => answerGit(git, e.argv, e.init?.cwd, e.init?.stdin))
+  on('clock.now', () => ({ value: 1_793_000_000_000 }))
+  on('fs.read', (_, e) => ({ value: CONTENT[e.path.replace(/\\/g, '/')] ?? '' }))
+  on('fs.exists', (_, e) => ({ value: onDisk.has(e.path.replace(/\\/g, '/')) }))
+
+  await $.session.start({ cwd: ROOT, surface: 'desktop', isInteractive: true })
+
+  repo.status = `?? ${SCRIPT_REL}\0?? ${INSTALL_REL}\0`
+  onDisk.add(`C:/repo/${SCRIPT_REL}`).add(`C:/repo/${INSTALL_REL}`)
+  await $.tool.call({ tool: 'PowerShell', command: 'Rename-Item .\\packages packages.partial-restore' })
+  const during = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await hasText(during, /2 code files/)).toBe(true)
+  await during.unmount()
+
+  await $.tool.call(edit(VIEW, '    OrderCalculator.Compute();'))
+
+  // The folder goes away, and a script deletes the tracked server file.
+  repo.status = ` M ${VIEW_REL}\0 D ${SERVER_REL}\0`
+  repo.diff =
+    hunk(VIEW_REL, '@@ -2,0 +3 @@', '+    OrderCalculator.Compute();') +
+    [`diff --git a/${SERVER_REL} b/${SERVER_REL}`, `--- a/${SERVER_REL}`, '+++ /dev/null', '@@ -1,3 +0,0 @@', '-a', '-b', '-c', ''].join('\n')
+  onDisk.delete(`C:/repo/${SCRIPT_REL}`)
+  onDisk.delete(`C:/repo/${INSTALL_REL}`)
+  onDisk.delete(`C:/repo/${SERVER_REL}`)
+  await $.tool.call({ tool: 'PowerShell', command: 'Remove-Item -Recurse -Force .\\packages.partial-restore; Remove-Item x' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.findAll({ type: 'Button' })).map(button => button.key)).toEqual([VIEW_KEY, SERVER_KEY])
+  expect(await hasText(ui, /2 code files/)).toBe(true)
+  expect(await hasText(ui, 'L3')).toBe(true)
+  // The rows are numbered again from 1, in first-change order.
+  expect(await hasText(ui, /● +1 $/)).toBe(true)
+  expect(await hasText(ui, /● +2 $/)).toBe(true)
+  expect(await hasText(ui, /● +3 $/)).toBe(false)
+  await ui.unmount()
+})
+
+test('a file the session created, staged and then deleted leaves the map and does not come back', async ($, on) => {
+  const repo = fakeRepo({ tree: [VIEW_REL] })
+  const git: FakeGit = { repos: { 'C:/repo': repo }, worktrees: ['C:/repo'] }
+  const onDisk = new Set<string>([`C:/repo/${VIEW_REL}`])
+  on('command.register', () => ({ value: { command: 'change-map' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: ROOT }))
+  on('tool.call', (_, e) => {
+    if (e.tool === 'Write') onDisk.add(e.file_path.replace(/\\/g, '/'))
+    return { result: {} }
+  })
+  on('process.run', (_, e) => answerGit(git, e.argv, e.init?.cwd, e.init?.stdin))
+  on('clock.now', () => ({ value: 1_793_000_000_000 }))
+  on('fs.read', (_, e) => ({ value: CONTENT[e.path.replace(/\\/g, '/')] ?? '' }))
+  on('fs.exists', (_, e) => ({ value: onDisk.has(e.path.replace(/\\/g, '/')) }))
+
+  await $.session.start({ cwd: ROOT, surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Write', file_path: NEW_TEST, content: CONTENT[`C:/repo/${NEW_TEST_REL}`] ?? '' })
+  repo.status = `A  ${NEW_TEST_REL}\0`
+  await $.tool.call({ tool: 'Bash', command: `git add ${NEW_TEST_REL}` })
+
+  // Git still reports the staged file after it is gone, through two polls.
+  repo.status = `AD ${NEW_TEST_REL}\0`
+  onDisk.delete(`C:/repo/${NEW_TEST_REL}`)
+  await $.tool.call({ tool: 'Bash', command: `rm ${NEW_TEST_REL}` })
+  await $.tool.call({ tool: 'Bash', command: 'git status' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await hasText(ui, 'No code files changed yet.')).toBe(true)
   await ui.unmount()
 })
 
